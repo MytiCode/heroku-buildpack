@@ -23,17 +23,14 @@ read_json_key() {
   fi
 }
 
-print() {
-    local msg="${1}"
-    echo "------> ${msg}"
+banner() {
+  sed -u 's/^/------> /'
 }
-
 
 # Indents output to align to heroku established conventions.
 #   See: https://devcenter.heroku.com/articles/buildpack-api#bin-compile-example
-print_indented() {
-    local msg="${1}"
-    echo "      ${msg}"
+indent() {
+  sed -u 's/^/       /'
 }
 
 # Shamelessy taken from heroku's nodejs buildpack.
@@ -59,28 +56,31 @@ ENV_DIR="${3}"
 NX_FILE="${BUILD_DIR}/nx.json"
 if [ ! -f "${NX_FILE}" ] ; then
     # TODO(ryanouellette): @errors Should probably have a differently formatted error message.
-    print_indented "NX Workspace file does not exist: ${NX_FILE}. Aborting"
+    echo "NX Workspace file does not exist: ${NX_FILE}. Aborting" | indent
     exit 1
 fi
 
 APP_NX_PROJECT="$(cat "${ENV_DIR}/APP_NX_PROJECT")"
 if [ -z "${APP_NX_PROJECT}" ] ; then
     # TODO(ryanouellette): @errors Should probably have a differently formatted error message.
-    print_indented "APP_NX_PROJECT must be defined in the application environment and non-empty. Aborting"
+    echo "APP_NX_PROJECT must be defined in the application environment and non-empty. Aborting" | indent
     exit 1
 fi
 
-print "Checking if project: ${APP_NX_PROJECT} is affected by changeset."
+echo "Installing nx" | banner
+npm ci -D nx |& indent
+
+echo "Checking if project: ${APP_NX_PROJECT} is affected by changeset." | banner
 
 AFFECTED="$(
-  nx affected:is_affected --base=main --head=HEAD --exclude='!'"${APP_NX_PROJECT}"',*'
+  npm nx affected:is_affected --base=main --head=HEAD --exclude='!'"${APP_NX_PROJECT}"',*'
   | grep "> nx run ${APP_NX_PROJECT}:is_affected"
 )"
 
 if [ -n "${AFFECTED}" ] ; then
-    print_indented "Affected"
+    echo "Affected" | indent
     exit 0
 else
-    print_indented "Unaffected"
+    echo "Unaffected" | indent
     exit 1
 fi
