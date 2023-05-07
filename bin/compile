@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+
+# Indents output to align to heroku established conventions.
+#   See: https://devcenter.heroku.com/articles/buildpack-api#bin-compile-example
+indent() {
+    sed -u 's/^/      /'
+}
+
+# Reads a json key out of a json file, e.g. package.json. Essentially cribbed from
+# heroku's nodejs buildpack.
+read_json_key() {
+  local file="${1}"
+  local key="${2}"
+
+  if [ -f "${file}" ] ; then
+    # -c = print on only one line
+    # -M = strip any color
+    # --raw-output = if the filter’s result is a string then it will be written directly
+    #                to stdout rather than being formatted as a JSON string with quotes
+    cat "${file}" | jq -c -M --raw-output "${key}"' // ""' || return 1
+  else
+    echo ""
+  fi
+}
+
+print() {
+    local msg="${1}"
+    echo "------> ${msg}"
+}
+
+
+# Indents output to align to heroku established conventions.
+#   See: https://devcenter.heroku.com/articles/buildpack-api#bin-compile-example
+print_indented() {
+    local msg="${1}"
+    echo "      ${msg}"
+}
+
+# Shamelessy taken from heroku's nodejs buildpack.
+read_json_key() {
+  local file="${1}"
+  local key="${2}"
+
+  if [ -f "${file}" ] ; then
+    # -c = print on only one line
+    # -M = strip any color
+    # --raw-output = if the filter’s result is a string then it will be written directly
+    #                to stdout rather than being formatted as a JSON string with quotes
+    cat "${file}" | jq -c -M --raw-output "${key}"' // ""' || return 1
+  else
+    echo ""
+  fi
+}
+
+BUILD_DIR="${1}"
+CACHE_DIR="${2}"
+ENV_DIR="${3}"
+
+NX_FILE="${BUILD_DIR}/nx.json"
+if [ ! -f "${NX_FILE}" ] ; then
+    # TODO(ryanouellette): @errors Should probably have a differently formatted error message.
+    print_indented "NX Workspace file does not exist: ${NX_FILE}. Aborting"
+    exit 1
+fi
+
+APP_NX_PROJECT="$(cat "${ENV_DIR}/APP_NX_PROJECT")"
+if [ -z "${APP_NX_PROJECT}" ] ; then
+    # TODO(ryanouellette): @errors Should probably have a differently formatted error message.
+    print_indented "APP_NX_PROJECT must be defined in the application environment and non-empty. Aborting"
+    exit 1
+fi
+
+print "Checking if project: ${APP_NX_PROJECT} is affected by changeset."
+
+AFFECTED="$(
+  nx affected:is_affected --base=main --head=HEAD --exclude='!'"${APP_NX_PROJECT}"',*'
+  | grep "> nx run ${APP_NX_PROJECT}:is_affected"
+)"
+
+if [ -n "${AFFECTED}" ] ; then
+    print_indented "Affected"
+    exit 0
+else
+    print_indented "Unaffected"
+    exit 1
+fi
