@@ -1,86 +1,175 @@
 #!/usr/bin/env bash
+# bin/compile <build-dir> <cache-dir> <env-dir>
 
-# Indents output to align to heroku established conventions.
-#   See: https://devcenter.heroku.com/articles/buildpack-api#bin-compile-example
-indent() {
-    sed -u 's/^/      /'
+### Configure environment
+
+set -o errexit    # always exit on error
+set -o pipefail   # don't ignore exit codes when piping output
+# unset GIT_DIR     # Avoid GIT_DIR leak from previous build steps
+
+[ "$BUILDPACK_XTRACE" ] && set -o xtrace
+
+### Constants
+
+### Configure directories
+
+BUILD_DIR=${1:-}
+CACHE_DIR=${2:-}
+ENV_DIR=${3:-}
+BP_DIR=$(cd "$(dirname "${0:-}")"; cd ..; pwd)
+
+### Load dependencies
+
+source "$BP_DIR/lib/output.sh"
+source "$BP_DIR/lib/environment.sh"
+source "$BP_DIR/lib/failure.sh"
+source "$BP_DIR/lib/binaries.sh"
+source "$BP_DIR/lib/json.sh"
+source "$BP_DIR/lib/cache.sh"
+source "$BP_DIR/lib/dependencies.sh"
+source "$BP_DIR/lib/plugin.sh"
+
+export PATH="$BUILD_DIR/.heroku/node/bin":$PATH
+
+LOG_FILE=$(mktemp -t node-build-log.XXXXX)
+echo "" > "$LOG_FILE"
+
+### Handle errors
+
+handle_failure() {
+  header "Build failed"
+  fail_node_install "$LOG_FILE" "$BUILD_DIR"
+  fail_invalid_semver "$LOG_FILE"
+  warn_aws_proxy "$BUILD_DIR"
+  warn_missing_devdeps "$LOG_FILE" "$BUILD_DIR"
+  warn_econnreset "$LOG_FILE"
+  failure_message | output "$LOG_FILE"
+}
+trap 'handle_failure' ERR
+
+
+### Failures that should be caught immediately
+
+fail_prebuilt "$BUILD_DIR"
+fail_no_nx_workspace "$BUILD_DIR"
+fail_dot_heroku "$BUILD_DIR"
+fail_dot_heroku_node "$BUILD_DIR"
+fail_invalid_package_json "$BUILD_DIR"
+fail_multiple_lockfiles "$BUILD_DIR"
+warn_prebuilt_modules "$BUILD_DIR"
+warn_missing_package_json "$BUILD_DIR"
+
+### Compile
+
+create_env() {
+  write_profile "$BP_DIR" "$BUILD_DIR"
+  write_export "$BP_DIR" "$BUILD_DIR"
+  export_env_dir "$ENV_DIR"
+  create_default_env
 }
 
-# Reads a json key out of a json file, e.g. package.json. Essentially cribbed from
-# heroku's nodejs buildpack.
-read_json_key() {
-  local file="${1}"
-  local key="${2}"
+header "Creating runtime environment" | output "$LOG_FILE"
 
-  if [ -f "${file}" ] ; then
-    # -c = print on only one line
-    # -M = strip any color
-    # --raw-output = if the filter’s result is a string then it will be written directly
-    #                to stdout rather than being formatted as a JSON string with quotes
-    cat "${file}" | jq -c -M --raw-output "${key}"' // ""' || return 1
+mkdir -p "$BUILD_DIR/.heroku/node/"
+cd "$BUILD_DIR"
+# can't pipe the whole thing because piping causes subshells, preventing exports
+create_env
+list_node_config | output "$LOG_FILE"
+create_build_env
+
+install_bins() {
+  local node_engine npm_engine yarn_engine npm_version node_version
+
+  node_engine=$(read_json "$BUILD_DIR/package.json" ".engines.node")
+  npm_engine=$(read_json "$BUILD_DIR/package.json" ".engines.npm")
+  pnpm_engine=$(read_json "$BUILD_DIR/package.json" ".engines.pnpm")
+
+  echo "engines.node (package.json):  ${node_engine:-unspecified}"
+  echo "engines.npm (package.json):   ${npm_engine:-unspecified (use default)}"
+  echo "engines.pnpm (package.json):  ${pnpm_engine:-unspecified (use default)}"
+  echo ""
+
+  warn_node_engine "$node_engine"
+
+  install_nodejs "$node_engine" "$BUILD_DIR/.heroku/node"
+  install_npm "$npm_engine" "$BUILD_DIR/.heroku/node"
+  install_pnpm "$pnpm_engine"
+  install_nx
+}
+
+header "Installing binaries" | output "$LOG_FILE"
+install_bins | output "$LOG_FILE"
+
+restore_cache() {
+  local cache_status="$(get_cache_status "$CACHE_DIR")"
+
+  if [[ "$cache_status" == "disabled" ]]; then
+    header "Restoring cache"
+    echo "Caching has been disabled because NODE_MODULES_CACHE=${NODE_MODULES_CACHE}"
+  elif [[ "$cache_status" == "valid" ]]; then
+    header "Restoring cache"
+    restore_default_cache_directories "$BUILD_DIR" "$CACHE_DIR"
+  elif [[ "$cache_status" == "new-signature" ]]; then
+    header "Restoring cache"
+    echo "Cached directories were not restored due to a change in version of node, npm, yarn or stack"
+    echo "Module installation may take longer for this build"
   else
-    echo ""
+    # No cache exists, be silent
+    :
   fi
 }
 
-banner() {
-  sed -u 's/^/------> /'
+restore_cache | output "$LOG_FILE"
+
+build_dependencies() {
+  local cache_status start
+  pnpm_node_modules "$BUILD_DIR"
+  (
+    set -f
+    filter=( "*" )
+    for app in ${APPLIANCE_NX_PROJECTS}; do
+        filter+=( '!'"${app}" )
+    done;
+    IFS=","
+    echo "${filter[*]}"
+    nx run-many -t build --exclude="${filter[*]}"
+  )
 }
 
-# Indents output to align to heroku established conventions.
-#   See: https://devcenter.heroku.com/articles/buildpack-api#bin-compile-example
-indent() {
-  sed -u 's/^/       /'
-}
+header "Installing dependencies" | output "$LOG_FILE"
+build_dependencies | output "$LOG_FILE"
 
-# Shamelessy taken from heroku's nodejs buildpack.
-read_json_key() {
-  local file="${1}"
-  local key="${2}"
-
-  if [ -f "${file}" ] ; then
-    # -c = print on only one line
-    # -M = strip any color
-    # --raw-output = if the filter’s result is a string then it will be written directly
-    #                to stdout rather than being formatted as a JSON string with quotes
-    cat "${file}" | jq -c -M --raw-output "${key}"' // ""' || return 1
+cache_build() {
+  clear_cache "$CACHE_DIR"
+  if ! ${NODE_MODULES_CACHE:-true}; then
+    # we've already warned that caching is disabled in the restore step
+    # so be silent here
+    :
   else
-    echo ""
+    header "Caching build"
+    save_default_cache_directories "$BUILD_DIR" "$CACHE_DIR"
+  fi
+  save_signature "$CACHE_DIR"
+}
+
+prune_devdependencies() {
+  pnpm_prune_devdependencies "$BUILD_DIR"
+}
+
+cache_build | output "$LOG_FILE"
+header "Pruning devDependencies" | output "$LOG_FILE"
+prune_devdependencies | output "$LOG_FILE"
+
+summarize_build() {
+  if $NODE_VERBOSE; then
+    list_dependencies "$BUILD_DIR"
   fi
 }
 
-BUILD_DIR="${1}"
-CACHE_DIR="${2}"
-ENV_DIR="${3}"
+install_plugin "$BP_DIR" "$BUILD_DIR"
 
-NX_FILE="${BUILD_DIR}/nx.json"
-if [ ! -f "${NX_FILE}" ] ; then
-    # TODO(ryanouellette): @errors Should probably have a differently formatted error message.
-    echo "NX Workspace file does not exist: ${NX_FILE}. Aborting" | indent
-    exit 1
-fi
+header "Build succeeded!" | output "$LOG_FILE"
+summarize_build | output "$LOG_FILE"
 
-APP_NX_PROJECT="$(cat "${ENV_DIR}/APP_NX_PROJECT")"
-if [ -z "${APP_NX_PROJECT}" ] ; then
-    # TODO(ryanouellette): @errors Should probably have a differently formatted error message.
-    echo "APP_NX_PROJECT must be defined in the application environment and non-empty. Aborting" | indent
-    exit 1
-fi
-
-echo "Installing nx" | banner
-npm ci -D nx |& indent
-
-echo "Checking if project: ${APP_NX_PROJECT} is affected by changeset." | banner
-
-AFFECTED="$(
-  npm nx affected:is_affected --base=main --head=HEAD --exclude='!'"${APP_NX_PROJECT}"',*'
-  | grep "> nx run ${APP_NX_PROJECT}:is_affected"
-)"
-
-if [ -n "${AFFECTED}" ] ; then
-    echo "Affected" | indent
-    exit 0
-else
-    echo "Unaffected" | indent
-    exit 1
-fi
+warn_no_start "$BUILD_DIR"
+warn_unmet_dep "$LOG_FILE"

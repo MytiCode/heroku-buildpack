@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
+# bin/detect <build-dir>
 
-# We always want to run our own buildpack. This way we can error out noticeably and dramatically if we
-# find ourselves in an unexpected environment/state.
-
-echo "MytiBuildpack"
+echo "heroku-buildpack"
 exit 0
