@@ -125,7 +125,7 @@ build_dependencies() {
   local cache_status start
   pnpm_node_modules "$BUILD_DIR"
   (
-    cd "$BUILD_DIR"
+    cd "$BUILD_DIR" || return
     set -f
     filter=( "*" )
     for app in ${APPLIANCE_NX_PROJECTS}; do
