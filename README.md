@@ -1,1 +1,1 @@
-# heroku-buildpack-bootstrap
+# heroku-buildpack
