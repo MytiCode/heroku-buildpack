@@ -67,8 +67,6 @@ install_nodejs() {
   chmod +x "$dir"/bin/*
 }
 
-printenv
-
 install_npm() {
   local npm_version
   local version="$1"
@@ -107,4 +105,14 @@ install_nx() {
   # Verify nx works before capturing and ensure its stderr is inspectable later.
   nx --version 2>&1 1>/dev/null
   echo "nx $(nx --version) installed"
+}
+
+install_jq() {
+  # jq is available by default, but lets handle in case this changes.
+  if ! which jq >/dev/null; then
+    apt-get install jq | indent
+  fi
+  # Verify jq works before capturing and ensure its stderr is inspectable later.
+  jq --version 2>&1 1>/dev/null
+  echo "jq $(jq --version) installed"
 }
