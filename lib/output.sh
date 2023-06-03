@@ -7,6 +7,10 @@ info() {
   echo "       $*" || true
 }
 
+indent() {
+    sed -u 's/^/    /'
+}
+
 # format output and send a copy to the log
 output() {
   local logfile="$1"
