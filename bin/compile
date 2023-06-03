@@ -173,12 +173,12 @@ build_appliance | output "${LOG_FILE}"
 cache_build() {
   clear_cache "$CACHE_DIR"
   if bool_var NODE_MODULES_CACHE; then
+    header "Caching build"
+    save_default_cache_directories "${BUILD_DIR}" "$CACHE_DIR"
+  else
     # we've already warned that caching is disabled in the restore step
     # so be silent here
     :
-  else
-    header "Caching build"
-    save_default_cache_directories "${BUILD_DIR}" "$CACHE_DIR"
   fi
   save_signature "$CACHE_DIR"
 }
