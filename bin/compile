@@ -8,6 +8,9 @@ set -o pipefail   # don't ignore exit codes when piping output
 # unset GIT_DIR     # Avoid GIT_DIR leak from previous build steps
 
 ### Constants
+BUILDPACK_DEBUG="${BUILDPACK_DEBUG:-false}"
+BUILDPACK_XTRACE="${BUILDPACK_XTRACE:-false}"
+NODE_MODULES_CACHE="${NODE_MODULES_CACHE:-false}"
 
 ### Configure directories
 
@@ -64,6 +67,21 @@ warn_missing_package_json "${BUILD_DIR}"
 
 ### Compile
 
+bool_var() {
+  case "${!1}" in
+    true)
+      return 0
+      ;;
+    false)
+      return 1
+      ;;
+    *)
+      echo "parameter: ${1}='${!1}' is not a boolean, expected 'true' or 'false'" >&2
+      return 1
+      ;;
+  esac
+}
+
 create_env() {
   write_profile "${BP_DIR}" "${BUILD_DIR}"
   write_export "${BP_DIR}" "${BUILD_DIR}"
@@ -80,21 +98,6 @@ cd "${BUILD_DIR}"
 create_env
 list_node_config | output "${LOG_FILE}"
 create_build_env
-
-bool_var() {
-  case "${!1}" in
-    true)
-      return 0
-      ;;
-    false)
-      return 1
-      ;;
-    *)
-      echo "parameter: ${1}='${!1}' is not a boolean, expected 'true' or 'false'" >&2
-      return 1
-      ;;
-  esac
-}
 
 if bool_var BUILDPACK_XTRACE; then
   set -o xtrace
@@ -169,7 +172,7 @@ build_appliance | output "${LOG_FILE}"
 
 cache_build() {
   clear_cache "$CACHE_DIR"
-  if ! ${NODE_MODULES_CACHE:-false}; then
+  if bool_var NODE_MODULES_CACHE; then
     # we've already warned that caching is disabled in the restore step
     # so be silent here
     :
